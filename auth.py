@@ -226,7 +226,6 @@ def perform_initial_handshake(token_file: str = TOKEN_FILE) -> Dict[str, Any]:
 
     print("Waiting for Schwab login…")
     code = get_auth_code(client_id)
-    print("Authorization code received:", code)
 
     raw_tokens = exchange_code_for_tokens(code, client_id, client_secret)
     save_tokens(raw_tokens, token_file)
@@ -264,8 +263,12 @@ def refresh_access_token(tokens: Dict[str, Any], token_file: str = TOKEN_FILE) -
     
     print("Refreshing access token...")
     resp = requests.post(TOKEN_URL, headers=headers, data=data)
-    resp.raise_for_status()
-    
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        print(f"Refresh token request failed ({resp.status_code}): {resp.text}")
+        raise
+
     new_tokens = resp.json()
     # Preserve refresh_token if not included in response
     if "refresh_token" not in new_tokens and "refresh_token" in tokens:
