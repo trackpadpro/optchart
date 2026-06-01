@@ -1,0 +1,83 @@
+# optchart
+
+Lightweight tooling to collect and visualize option position data from Schwab via OAuth. Displays a Gantt chart of position lifespans, intrinsic/extrinsic values, and market tracking.
+
+## Features
+
+- **OAuth Authentication**: Secure login to Schwab API with automatic token refresh
+- **Position Data**: Fetch current option positions and account info
+- **Gantt Visualization**: Timeline chart showing option expiration dates with opacity proportional to profitability
+- **Value Analysis**: Displays intrinsic and extrinsic values in a live dashboard table
+- **Local Caching**: Stores position and market data locally for offline review
+
+## Prerequisites
+
+- Python 3.8+
+- Schwab API credentials (obtain from [Schwab Developer Portal](https://developer.schwab.com))
+
+## Installation
+
+```bash
+git clone <repository>
+cd optchart
+python -m pip install -r requirements.txt
+```
+
+## Quick Start
+
+### 1. Generate Credentials
+
+Obtain your `client_id` and `client_secret` from Schwab, then save to `auth/client.json`:
+
+```json
+{
+  "client_id": "YOUR_CLIENT_ID",
+  "client_secret": "YOUR_CLIENT_SECRET"
+}
+```
+
+### 2. Fetch Data and Generate Chart
+
+```bash
+python main.py
+```
+
+This will:
+- Authenticate with Schwab (browser login on first run)
+- Fetch account positions and option prices
+- Generate `data/gantt.png` showing position timelines
+- Cache data locally in `data/positions.json` and `data/tracking.json`
+
+### 3. View the Dashboard
+
+```bash
+streamlit run streamlit_app.py
+```
+
+Opens an interactive dashboard at `http://localhost:8501` showing the Gantt chart and values table.
+
+## Testing
+
+Run integrity checks:
+
+```bash
+python test.py
+```
+
+Verifies Python syntax, JSON structures, .gitignore protections, and chart generation.
+
+## Security
+
+- **Local-Only Credentials**: `auth/` folder is git-ignored; credentials never leave your machine
+- **Token Refresh**: Automatic refresh handles token expiry gracefully
+- **No Remote Storage**: All data cached locally only
+
+## File Structure
+
+- `main.py`: Entry point; orchestrates auth, data fetch, and chart generation
+- `auth.py`: OAuth flow and token management
+- `data.py`: Schwab API client; fetches positions and quotes
+- `plot.py`: Gantt chart generation and Streamlit dashboard
+- `test.py`: Integration tests and project validation
+- `auth/`: Local OAuth credentials (git-ignored)
+- `data/`: Cached positions, market data, and generated chart (git-ignored)

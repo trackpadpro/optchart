@@ -163,38 +163,21 @@ def _parse_account_numbers(data: Any) -> List[Dict[str, Any]]:
 
 
 def fetch_accounts(session: requests.Session) -> List[Dict[str, Any]]:
-    urls = [
-        f"{TRADER_API_BASE}/accounts/accountNumbers",
-        f"{TRADER_API_BASE}/accounts",
-        f"{TRADER_API_BASE}/accounts/",
-        f"{TRADER_API_BASE}/accounts/list",
-    ]
+    url = f"{TRADER_API_BASE}/accounts/accountNumbers"
+    try:
+        resp = session.get(url)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"Error fetching accounts from Schwab API: {exc}")
+        return []
 
-    data = None
-    for url in urls:
-        try:
-            resp = session.get(url)
-        except Exception as exc:
-            print(f"Failed to request {url}: {exc}")
-            continue
+    try:
+        data = resp.json()
+    except Exception as exc:
+        print(f"Failed to decode account JSON from Schwab response: {exc}")
+        return []
 
-        if resp.status_code == 404:
-            # try next candidate URL
-            print(f"Endpoint not found: {url} (404)")
-            continue
-
-        try:
-            resp.raise_for_status()
-        except Exception as exc:
-            print(f"Error fetching accounts from {url}: {exc} - {getattr(resp, 'text', '')}")
-            continue
-
-        try:
-            data = resp.json()
-            break
-        except Exception as exc:
-            print(f"Failed to decode JSON from {url}: {exc}")
-            continue
+    # accounts successfully fetched
 
     if data is None:
         print("No accounts data available from Schwab API; returning empty list.")
@@ -426,24 +409,20 @@ def fetch_quotes(session: requests.Session, symbols: List[str]) -> Dict[str, Dic
         return {}
 
     symbol_list = ",".join(symbols)
-    urls = [
-        f"{MARKETDATA_API_BASE}/quotes?symbols={symbol_list}",
-        f"{MARKETDATA_API_BASE}/quotes?symbols={symbol_list}",
-    ]
+    url = f"{MARKETDATA_API_BASE}/quotes?symbols={symbol_list}"
+    resp = session.get(url)
+    if resp.status_code != 200:
+        print(f"Unable to fetch quotes from Schwab API: {resp.status_code}")
+        return {}
 
-    for url in urls:
-        resp = session.get(url)
-        if resp.status_code != 200:
-            continue
-
-        data = resp.json()
-        if isinstance(data, dict):
-            if "quotes" in data and isinstance(data["quotes"], list):
-                return {q["symbol"]: q for q in data["quotes"] if isinstance(q, dict) and isinstance(q.get("symbol"), str)}
-            if "data" in data and isinstance(data["data"], list):
-                return {q["symbol"]: q for q in data["data"] if isinstance(q, dict) and isinstance(q.get("symbol"), str)}
-            if all(isinstance(v, dict) for v in data.values()):
-                return {k: v for k, v in data.items() if isinstance(v, dict)}
+    data = resp.json()
+    if isinstance(data, dict):
+        if "quotes" in data and isinstance(data["quotes"], list):
+            return {q["symbol"]: q for q in data["quotes"] if isinstance(q, dict) and isinstance(q.get("symbol"), str)}
+        if "data" in data and isinstance(data["data"], list):
+            return {q["symbol"]: q for q in data["data"] if isinstance(q, dict) and isinstance(q.get("symbol"), str)}
+        if all(isinstance(v, dict) for v in data.values()):
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
 
     print("Unable to fetch quotes for symbols:", symbol_list)
     return {}
@@ -458,46 +437,45 @@ def fetch_earnings(session: requests.Session, symbols: List[str]) -> Dict[str, D
         return {}
 
     symbol_list = ",".join(symbols)
-    urls = [
-        f"{MARKETDATA_API_BASE}/earnings?symbols={symbol_list}",
-        f"{MARKETDATA_API_BASE}/earnings?symbols={symbol_list}",
-        f"{MARKETDATA_API_BASE}/earnings",
-    ]
+    url = f"{MARKETDATA_API_BASE}/earnings?symbols={symbol_list}"
+    try:
+        resp = session.get(url)
+    except Exception as exc:
+        print(f"Unable to fetch earnings from Schwab API: {exc}")
+        return {}
 
-    for url in urls:
-        try:
-            resp = session.get(url)
-        except Exception:
-            continue
-        if resp.status_code != 200:
-            continue
+    if resp.status_code != 200:
+        print(f"Unable to fetch earnings from Schwab API: {resp.status_code}")
+        return {}
 
-        try:
-            data = resp.json()
-        except Exception as exc:
-            continue
+    try:
+        data = resp.json()
+    except Exception as exc:
+        print(f"Failed to decode earnings JSON from Schwab: {exc}")
+        return {}
 
-        # Common shapes: {"earnings": [ {"symbol": "AAPL", ...}, ... ]}
-        if isinstance(data, dict):
-            if "earnings" in data and isinstance(data["earnings"], list):
-                earnings = {}
-                for e in data["earnings"]:
-                    if isinstance(e, dict):
-                        symbol = e.get("symbol")
-                        if isinstance(symbol, str):
-                            earnings[symbol] = e
-                return earnings
-            if "data" in data and isinstance(data["data"], list):
-                earnings = {}
-                for e in data["data"]:
-                    if isinstance(e, dict):
-                        symbol = e.get("symbol")
-                        if isinstance(symbol, str):
-                            earnings[symbol] = e
-                return earnings
-            # If API returns a dict of symbol->info
-            if all(isinstance(v, dict) for v in data.values()):
-                return {k: v for k, v in data.items() if isinstance(v, dict)}
+    if isinstance(data, dict):
+        if "earnings" in data and isinstance(data["earnings"], list):
+            earnings = {}
+            for e in data["earnings"]:
+                if isinstance(e, dict):
+                    symbol = e.get("symbol")
+                    if isinstance(symbol, str):
+                        earnings[symbol] = e
+            # earnings fetched
+            return earnings
+        if "data" in data and isinstance(data["data"], list):
+            earnings = {}
+            for e in data["data"]:
+                if isinstance(e, dict):
+                    symbol = e.get("symbol")
+                    if isinstance(symbol, str):
+                        earnings[symbol] = e
+            # earnings fetched
+            return earnings
+        if all(isinstance(v, dict) for v in data.values()):
+            # earnings fetched
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
 
     # No earnings data available from tried endpoints
     return {}

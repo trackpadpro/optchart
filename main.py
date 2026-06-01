@@ -29,7 +29,12 @@ def main() -> None:
         while True:
             # Check if token needs refreshing
             if auth.is_token_expired(tokens):
-                tokens = auth.refresh_access_token(tokens)
+                try:
+                    tokens = auth.refresh_access_token(tokens)
+                except Exception as exc:
+                    print(f"Token refresh failed: {exc}")
+                    print("Attempting full authentication flow...")
+                    tokens = auth.perform_initial_handshake()
             
             if iteration % 5 == 0:
                 data.run()
