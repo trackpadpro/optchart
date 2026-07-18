@@ -51,6 +51,33 @@ POSITIVE_COLOR = "#00ff00"
 NEGATIVE_COLOR = "#ff0000"
 
 
+def _is_gain(bar_color: str) -> bool:
+    """Check if bar color represents a gain position."""
+    return bar_color in ("lime", "green")
+
+
+def _is_loss(bar_color: str) -> bool:
+    """Check if bar color represents a loss position."""
+    return bar_color in ("red",)
+
+
+def _get_base_color(bar_color: str) -> str:
+    """Get hex color from bar color name."""
+    return POSITIVE_COLOR if _is_gain(bar_color) else NEGATIVE_COLOR if _is_loss(bar_color) else "#ffffff"
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> tuple[float, float, float, float]:
+    """Convert hex color to RGBA tuple with given alpha."""
+    try:
+        h = hex_color.lstrip("#")
+        r = int(h[0:2], 16) / 255.0
+        g = int(h[2:4], 16) / 255.0
+        b = int(h[4:6], 16) / 255.0
+        return (r, g, b, max(0.0, min(1.0, alpha)))
+    except Exception:
+        return (1.0, 1.0, 1.0, alpha)
+
+
 def _format_money_html(v: Optional[float]) -> str:
     if v is None:
         return "N/A"
@@ -350,6 +377,45 @@ def make_gantt_chart() -> None:
         print("No valid option positions found for Gantt chart.")
         return
 
+    # First pass: collect all options with raw alpha values
+    option_data: List[Dict[str, Any]] = []
+    for _, options in ordered_underlyings:
+        for option in options:
+            market_value = option.get("market_value")
+            cost_basis = option.get("cost_basis")
+            quantity = option.get("quantity")
+            raw_alpha = 1.0
+            bar_color = option.get("bar_color")
+            
+            try:
+                if isinstance(market_value, (int, float)) and isinstance(cost_basis, (int, float)) and cost_basis != 0:
+                    if isinstance(quantity, (int, float)) and quantity > 0:
+                        # Long position: raw alpha based on % deviation from cost basis
+                        pct_change = abs((market_value - cost_basis) / cost_basis)
+                        raw_alpha = 0.2 + 0.8 * min(1.0, pct_change)
+                    else:
+                        # Short position: raw alpha based on market_value/cost_basis
+                        ratio = market_value / cost_basis
+                        raw_alpha = 1.0 - min(1.0, ratio)
+            except Exception:
+                raw_alpha = 1.0
+            
+            option_data.append({
+                "option": option,
+                "raw_alpha": raw_alpha,
+                "bar_color": bar_color,
+                "market_value": market_value,
+                "cost_basis": cost_basis,
+            })
+
+    # Separate into gain (green) and loss (red) groups, find max alpha in each
+    gain_alphas = [d["raw_alpha"] for d in option_data if _is_gain(d["bar_color"])]
+    loss_alphas = [d["raw_alpha"] for d in option_data if _is_loss(d["bar_color"])]
+    
+    max_gain_alpha = max(gain_alphas) if gain_alphas else 1.0
+    max_loss_alpha = max(loss_alphas) if loss_alphas else 1.0
+
+    # Second pass: render with normalized alphas
     rows: List[str] = []
     starts: List[datetime.datetime] = []
     durations: List[datetime.timedelta] = []
@@ -358,40 +424,37 @@ def make_gantt_chart() -> None:
     label_colors: List[str] = []
     expiration_labels: List[str] = []
 
-    for _, options in ordered_underlyings:
-        for option in options:
-            rows.append(option["label"])
-            starts.append(option["start"])
-            durations.append(option["duration"])
-            # compute opacity from market_value and cost_basis: 1 - min(1, market_value/cost_basis)
-            market_value = option.get("market_value")
-            cost_basis = option.get("cost_basis")
-            alpha = 1.0
+    for data in option_data:
+        option = data["option"]
+        raw_alpha = data["raw_alpha"]
+        bar_color = data["bar_color"]
+        market_value = data["market_value"]
+        cost_basis = data["cost_basis"]
+        
+        rows.append(option["label"])
+        starts.append(option["start"])
+        durations.append(option["duration"])
+        
+        # Normalize alpha based on group (gain vs loss)
+        if _is_gain(bar_color):
+            alpha = (raw_alpha / max_gain_alpha) if max_gain_alpha > 0 else 1.0
+        else:
+            alpha = (raw_alpha / max_loss_alpha) if max_loss_alpha > 0 else 1.0
+        
+        # Determine outline color
+        outline_color = None
+        try:
+            if isinstance(cost_basis, (int, float)) and isinstance(market_value, (int, float)):
+                outline_color = "white" if cost_basis == market_value else _get_base_color(bar_color)
+        except Exception:
             outline_color = None
-            try:
-                if isinstance(market_value, (int, float)) and isinstance(cost_basis, (int, float)) and cost_basis != 0:
-                    ratio = market_value / cost_basis
-                    alpha = 1.0 - min(1.0, ratio)
-                    # Determine outline color for all bars
-                    if isinstance(cost_basis, (int, float)) and isinstance(market_value, (int, float)) and cost_basis == market_value:
-                        outline_color = "white"
-                    else:
-                        outline_color = POSITIVE_COLOR if option.get("bar_color") in ("lime", "green") else NEGATIVE_COLOR if option.get("bar_color") in ("red",) else "white"
-            except Exception:
-                alpha = 1.0
-            # map base color to hex and convert to RGBA
-            base_hex = POSITIVE_COLOR if option.get("bar_color") in ("lime", "green") else NEGATIVE_COLOR if option.get("bar_color") in ("red",) else "#ffffff"
-            try:
-                h = base_hex.lstrip("#")
-                r = int(h[0:2], 16) / 255.0
-                g = int(h[2:4], 16) / 255.0
-                b = int(h[4:6], 16) / 255.0
-                colors.append((r, g, b, max(0.0, min(1.0, alpha))))
-            except Exception:
-                colors.append(base_hex)
-            outline_colors.append(outline_color)
-            label_colors.append(option["label_color"])
-            expiration_labels.append((option["start"] + option["duration"]).strftime("%m/%d/%Y"))
+        
+        # Convert base color to RGBA
+        base_hex = _get_base_color(bar_color)
+        colors.append(_hex_to_rgba(base_hex, alpha))
+        outline_colors.append(outline_color)
+        label_colors.append(option["label_color"])
+        expiration_labels.append((option["start"] + option["duration"]).strftime("%m/%d/%Y"))
 
     try:
         mdates, plt, np = import_plotting()
