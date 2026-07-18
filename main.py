@@ -42,8 +42,6 @@ def main() -> None:
             
             if iteration % 5 == 0:
                 data.run()
-            else:
-                pass
 
             data.update_tracking()
             plot.make_gantt_chart()
