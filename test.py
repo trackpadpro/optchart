@@ -19,7 +19,7 @@ Tests verify the complete workflow:
   1. OAuth authentication and token management
   2. Fetching option positions from Schwab API
   3. Tracking option prices and underlying asset prices
-  4. Generating Gantt chart visualization (gantt.png)
+  4. Generating chart visualizations for the available sort modes
 """
 
 import compileall
@@ -172,7 +172,7 @@ def check_gantt_generation() -> bool:
     print("Testing Gantt chart generation...")
     data_dir = os.path.join(root, "data")
     pos_file = os.path.join(data_dir, "positions.json")
-    gantt_file = os.path.join(data_dir, "gantt.png")
+    gantt_file = os.path.join(data_dir, "gantt_price.png")
 
     if not os.path.exists(pos_file):
         print("  [INFO] Skipping Gantt test (no positions file)")
