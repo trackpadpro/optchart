@@ -47,7 +47,7 @@ python main.py
 This will:
 - Authenticate with Schwab (browser login on first run)
 - Fetch account positions and option prices on each iteration
-- Generate `data/gantt.png` showing position timelines
+- Generate chart images showing position timelines for the available sort modes
 - Cache data locally in `data/positions.json` and `data/tracking.json`
 - **Launch the Streamlit dashboard at `http://localhost:8501` after the first data fetch**
 - Refresh data every 60 seconds; dashboard reflects updates on page reload

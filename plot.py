@@ -34,17 +34,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 POS_FILE = os.path.join(DATA_DIR, "positions.json")
 TRACK_FILE = os.path.join(DATA_DIR, "tracking.json")
-OUTPUT_FILE = os.path.join(DATA_DIR, "gantt.png")
+GANTT_PRICE_FILE = os.path.join(DATA_DIR, "gantt_price.png")
+GANTT_EXPIRATION_FILE = os.path.join(DATA_DIR, "gantt_expiration.png")
 
-
-def _format_money(v: Optional[float]) -> str:
-    if v is None:
-        return "N/A"
-    try:
-        rounded = round(float(v), 2)
-        return f"${rounded:,.2f}"
-    except Exception:
-        return str(v)
 
 FONT_FAMILY = "DejaVu Sans, Arial, sans-serif"
 POSITIVE_COLOR = "#00ff00"
@@ -150,7 +142,11 @@ def _compute_option_values(option: Dict[str, Any], tracking_data: Dict[str, Any]
     }
 
 
-def _ordered_option_groups(positions_data: Dict[str, Any], tracking_data: Dict[str, Any]) -> List[Tuple[str, List[Dict[str, Any]]]]:
+def _ordered_option_groups(
+    positions_data: Dict[str, Any],
+    tracking_data: Dict[str, Any],
+    sort_mode: str = "market_value",
+) -> List[Tuple[str, List[Dict[str, Any]]]]:
     grouped_options: Dict[str, List[Dict[str, Any]]] = {}
 
     for entry in positions_data.get("summary", []):
@@ -217,13 +213,32 @@ def _ordered_option_groups(positions_data: Dict[str, Any], tracking_data: Dict[s
         })
 
     for option_list in grouped_options.values():
-        option_list.sort(key=lambda opt: opt.get("option_price") or 0.0, reverse=True)
+        if sort_mode == "expiration":
+            option_list.sort(
+                key=lambda opt: (
+                    opt.get("start", datetime.datetime.min) + opt.get("duration", datetime.timedelta(0)),
+                    -(opt.get("option_price") or 0.0),
+                    opt.get("label") or "",
+                )
+            )
+        else:
+            option_list.sort(key=lambda opt: opt.get("option_price") or 0.0, reverse=True)
 
-    ordered_underlyings = sorted(
-        grouped_options.items(),
-        key=lambda item: sum(opt.get("market_value", 0.0) for opt in item[1]),
-        reverse=True,
-    )
+    if sort_mode == "expiration":
+        ordered_underlyings = sorted(
+            grouped_options.items(),
+            key=lambda item: (
+                min((opt.get("start", datetime.datetime.min) + opt.get("duration", datetime.timedelta(0))) for opt in item[1]),
+                -sum(opt.get("market_value", 0.0) for opt in item[1]),
+                item[0],
+            ),
+        )
+    else:
+        ordered_underlyings = sorted(
+            grouped_options.items(),
+            key=lambda item: sum(opt.get("market_value", 0.0) for opt in item[1]),
+            reverse=True,
+        )
 
     return ordered_underlyings
 
@@ -364,7 +379,7 @@ def lookup_market_value(tracking_data: Dict[str, Any], symbol: str) -> Optional[
 
 
 
-def make_gantt_chart() -> None:
+def make_gantt_chart(output_file: str = GANTT_PRICE_FILE, sort_mode: str = "market_value") -> None:
     if not os.path.exists(POS_FILE):
         print(f"No positions file found at {POS_FILE}; skipping Gantt chart.")
         return
@@ -372,7 +387,7 @@ def make_gantt_chart() -> None:
     positions_data = load_positions()
     tracking_data = load_tracking()
 
-    ordered_underlyings = _ordered_option_groups(positions_data, tracking_data)
+    ordered_underlyings = _ordered_option_groups(positions_data, tracking_data, sort_mode=sort_mode)
     if not ordered_underlyings:
         print("No valid option positions found for Gantt chart.")
         return
@@ -528,7 +543,7 @@ def make_gantt_chart() -> None:
 
     plt.tight_layout()
     os.makedirs(DATA_DIR, exist_ok=True)
-    fig.savefig(OUTPUT_FILE, facecolor=fig.get_facecolor())
+    fig.savefig(output_file, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -560,19 +575,40 @@ def streamlit_dashboard() -> None:
     )
     st.title("Options Dashboard")
 
-    # Ensure chart exists (generate if needed)
-    try:
-        make_gantt_chart()
-    except Exception:
-        pass
+    if "sort_mode" not in st.session_state:
+        st.session_state.sort_mode = "market_value"
+
+    def toggle_sort_mode() -> None:
+        if st.session_state.sort_mode == "market_value":
+            st.session_state.sort_mode = "expiration"
+        else:
+            st.session_state.sort_mode = "market_value"
+
+    chart_mode = st.session_state.sort_mode
+    chart_output = GANTT_PRICE_FILE if chart_mode == "market_value" else GANTT_EXPIRATION_FILE
 
     col1, col2 = st.columns([3, 1.65])
 
     with col1:
-        if os.path.exists(OUTPUT_FILE):
-            st.image(OUTPUT_FILE, width=700)
+        # Ensure chart exists (generate if needed)
+        try:
+            make_gantt_chart(output_file=chart_output, sort_mode=chart_mode)
+        except Exception:
+            pass
+
+        if os.path.exists(chart_output):
+            st.image(chart_output, width=700)
         else:
-            st.info("No Gantt chart available. Run the position update to generate `gantt.png`.")
+            st.info("No Gantt chart available. Run the position update to generate the chart image.")
+
+        _, button_col_center, _ = st.columns([1, 1.2, 1])
+        with button_col_center:
+            st.button(
+                "Sort by Expiration" if chart_mode == "market_value" else "Sort by Price",
+                on_click=toggle_sort_mode,
+                use_container_width=True,
+                type="primary",
+            )
 
     positions = []
     try:
