@@ -38,6 +38,15 @@ GANTT_PRICE_FILE = os.path.join(DATA_DIR, "gantt_price.png")
 GANTT_EXPIRATION_FILE = os.path.join(DATA_DIR, "gantt_expiration.png")
 
 
+def _format_money(v: Optional[float]) -> str:
+    if v is None:
+        return "N/A"
+    try:
+        rounded = round(float(v), 2)
+        return f"${rounded:,.2f}"
+    except Exception:
+        return str(v)
+
 FONT_FAMILY = "DejaVu Sans, Arial, sans-serif"
 POSITIVE_COLOR = "#00ff00"
 NEGATIVE_COLOR = "#ff0000"
@@ -142,12 +151,35 @@ def _compute_option_values(option: Dict[str, Any], tracking_data: Dict[str, Any]
     }
 
 
-def _ordered_option_groups(
-    positions_data: Dict[str, Any],
-    tracking_data: Dict[str, Any],
-    sort_mode: str = "market_value",
-) -> List[Tuple[str, List[Dict[str, Any]]]]:
-    grouped_options: Dict[str, List[Dict[str, Any]]] = {}
+def _expiration_sort_key(option: Dict[str, Any]) -> Tuple[datetime.datetime, float, str]:
+    for key in ("market_value", "option_price", "cost_basis"):
+        value = option.get(key)
+        if isinstance(value, (int, float)) and float(value) != 0.0:
+            price_value = abs(float(value))
+            break
+    else:
+        price_value = 0.0
+
+    return (
+        option.get("expiration") or datetime.datetime.min,
+        -price_value,
+        option.get("label") or "",
+    )
+
+
+def _price_sort_key(option: Dict[str, Any]) -> Tuple[float, float, str]:
+    quantity = option.get("quantity")
+    signed_quantity = float(quantity) if isinstance(quantity, (int, float)) else 0.0
+    price = option.get("market_value")
+    try:
+        price_value = float(price)
+    except Exception:
+        price_value = float(option.get("option_price") or 0.0)
+    return (-price_value, -signed_quantity, option.get("label") or "")
+
+
+def _collect_option_rows(positions_data: Dict[str, Any], tracking_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    all_options: List[Dict[str, Any]] = []
 
     for entry in positions_data.get("summary", []):
         if not isinstance(entry, dict):
@@ -196,10 +228,11 @@ def _ordered_option_groups(
         if not label:
             label = symbol or "option"
 
-        grouped_options.setdefault(underlying, []).append({
+        all_options.append({
             "label": label,
             "symbol": symbol,
             "start": start,
+            "expiration": end,
             "duration": duration,
             "bar_color": bar_color,
             "cost_basis": cost_basis,
@@ -212,35 +245,40 @@ def _ordered_option_groups(
             "underlying": underlying,
         })
 
-    for option_list in grouped_options.values():
-        if sort_mode == "expiration":
-            option_list.sort(
-                key=lambda opt: (
-                    opt.get("start", datetime.datetime.min) + opt.get("duration", datetime.timedelta(0)),
-                    -(opt.get("option_price") or 0.0),
-                    opt.get("label") or "",
-                )
-            )
-        else:
-            option_list.sort(key=lambda opt: opt.get("option_price") or 0.0, reverse=True)
+    return all_options
 
+
+def _ordered_option_groups(
+    positions_data: Dict[str, Any],
+    tracking_data: Dict[str, Any],
+    sort_mode: str = "market_value",
+) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    all_options = _collect_option_rows(positions_data, tracking_data)
     if sort_mode == "expiration":
-        ordered_underlyings = sorted(
-            grouped_options.items(),
-            key=lambda item: (
-                min((opt.get("start", datetime.datetime.min) + opt.get("duration", datetime.timedelta(0))) for opt in item[1]),
-                -sum(opt.get("market_value", 0.0) for opt in item[1]),
-                item[0],
-            ),
-        )
-    else:
-        ordered_underlyings = sorted(
-            grouped_options.items(),
-            key=lambda item: sum(opt.get("market_value", 0.0) for opt in item[1]),
-            reverse=True,
-        )
+        sorted_options = sorted(all_options, key=_expiration_sort_key)
+        return [("__all__", sorted_options)]
 
-    return ordered_underlyings
+    grouped_options: Dict[str, List[Dict[str, Any]]] = {}
+    for option in all_options:
+        grouped_options.setdefault(option["underlying"], []).append(option)
+
+    for option_list in grouped_options.values():
+        option_list.sort(key=_price_sort_key)
+
+    return sorted(
+        grouped_options.items(),
+        key=lambda item: sum(opt.get("market_value", 0.0) for opt in item[1]),
+        reverse=True,
+    )
+
+
+def _ordered_options_for_chart(
+    positions_data: Dict[str, Any],
+    tracking_data: Dict[str, Any],
+    sort_mode: str = "market_value",
+) -> List[Dict[str, Any]]:
+    ordered_groups = _ordered_option_groups(positions_data, tracking_data, sort_mode=sort_mode)
+    return [option for _, options in ordered_groups for option in options]
 
 
 def _build_values_table_html(groups: List[Tuple[str, List[Dict[str, Any]]]]) -> str:
@@ -261,6 +299,34 @@ def _build_values_table_html(groups: List[Tuple[str, List[Dict[str, Any]]]]) -> 
     tracking = load_tracking()
 
     for underlying, options in groups:
+        if underlying == "__all__":
+            for option in options:
+                values = _compute_option_values(option, tracking)
+                intrinsic = values["intrinsic"]
+                extrinsic = values["extrinsic"]
+                intrinsic_html = _format_money_html(intrinsic)
+                extrinsic_html = _format_money_html(extrinsic)
+                intrinsic_color = _money_color(intrinsic)
+                extrinsic_color = _money_color(extrinsic)
+                html.append(
+                    "<tr>"
+                    "<td style='padding:8px; border:1px solid #2a2a2a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>%s</td>"
+                    "<td style='padding:8px; border:1px solid #2a2a2a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>%s</td>"
+                    "<td style='padding:8px; border:1px solid #2a2a2a; text-align:right;'>%s</td>"
+                    "<td style='padding:8px; border:1px solid #2a2a2a; text-align:right; color:%s;'>%s</td>"
+                    "<td style='padding:8px; border:1px solid #2a2a2a; text-align:right; color:%s;'>%s</td>"
+                    "</tr>" % (
+                        option.get("underlying", ""),
+                        option["label"],
+                        option["quantity"],
+                        intrinsic_color,
+                        intrinsic_html,
+                        extrinsic_color,
+                        extrinsic_html,
+                    )
+                )
+            continue
+
         n = len(options)
         # representative mark: use tracking mark for the underlying if available
         rep_mark = None
@@ -379,23 +445,30 @@ def lookup_market_value(tracking_data: Dict[str, Any], symbol: str) -> Optional[
 
 
 
-def make_gantt_chart(output_file: str = GANTT_PRICE_FILE, sort_mode: str = "market_value") -> None:
+def _resolve_output_file(sort_mode: str, output_file: Optional[str] = None) -> str:
+    if output_file:
+        return output_file
+    return GANTT_EXPIRATION_FILE if sort_mode == "expiration" else GANTT_PRICE_FILE
+
+
+def make_gantt_chart(sort_mode: str = "market_value", output_file: Optional[str] = None) -> None:
     if not os.path.exists(POS_FILE):
         print(f"No positions file found at {POS_FILE}; skipping Gantt chart.")
         return
 
+    output_path = _resolve_output_file(sort_mode=sort_mode, output_file=output_file)
+
     positions_data = load_positions()
     tracking_data = load_tracking()
 
-    ordered_underlyings = _ordered_option_groups(positions_data, tracking_data, sort_mode=sort_mode)
-    if not ordered_underlyings:
+    ordered_options = _ordered_options_for_chart(positions_data, tracking_data, sort_mode=sort_mode)
+    if not ordered_options:
         print("No valid option positions found for Gantt chart.")
         return
 
     # First pass: collect all options with raw alpha values
     option_data: List[Dict[str, Any]] = []
-    for _, options in ordered_underlyings:
-        for option in options:
+    for option in ordered_options:
             market_value = option.get("market_value")
             cost_basis = option.get("cost_basis")
             quantity = option.get("quantity")
@@ -477,7 +550,7 @@ def make_gantt_chart(output_file: str = GANTT_PRICE_FILE, sort_mode: str = "mark
         print(exc)
         return
 
-    fig, ax = plt.subplots(figsize=(9, max(6, len(rows) * 0.6)))
+    fig, ax = plt.subplots(figsize=(22.5, max(6, len(rows) * 0.6)), dpi=160)
     fig.patch.set_facecolor("#1e1e1e")
     ax.set_facecolor("#252525")
     plt.rcParams["font.family"] = "DejaVu Sans"
@@ -531,6 +604,15 @@ def make_gantt_chart(output_file: str = GANTT_PRICE_FILE, sort_mode: str = "mark
                 fontsize=9,
             )
 
+    generated_date = datetime.datetime.now().date()
+    ax.axvline(
+        mdates.date2num(generated_date),
+        color="white",
+        linewidth=1.0,
+        alpha=0.9,
+        zorder=5,
+    )
+
     ax.xaxis_date()
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     fig.autofmt_xdate(rotation=45)
@@ -543,7 +625,7 @@ def make_gantt_chart(output_file: str = GANTT_PRICE_FILE, sort_mode: str = "mark
 
     plt.tight_layout()
     os.makedirs(DATA_DIR, exist_ok=True)
-    fig.savefig(output_file, facecolor=fig.get_facecolor())
+    fig.savefig(output_path, facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
@@ -584,31 +666,25 @@ def streamlit_dashboard() -> None:
         else:
             st.session_state.sort_mode = "market_value"
 
-    chart_mode = st.session_state.sort_mode
-    chart_output = GANTT_PRICE_FILE if chart_mode == "market_value" else GANTT_EXPIRATION_FILE
+    chart_output = _resolve_output_file(st.session_state.sort_mode)
 
-    col1, col2 = st.columns([3, 1.65])
+    # Ensure chart exists (generate if needed)
+    try:
+        make_gantt_chart(sort_mode=st.session_state.sort_mode, output_file=chart_output)
+    except Exception:
+        pass
 
-    with col1:
-        # Ensure chart exists (generate if needed)
-        try:
-            make_gantt_chart(output_file=chart_output, sort_mode=chart_mode)
-        except Exception:
-            pass
+    if os.path.exists(chart_output):
+        st.image(chart_output, use_container_width=False)
+    else:
+        st.info(f"No Gantt chart available. Run the position update to generate `{os.path.basename(chart_output)}`.")
 
-        if os.path.exists(chart_output):
-            st.image(chart_output, width=700)
-        else:
-            st.info("No Gantt chart available. Run the position update to generate the chart image.")
-
-        _, button_col_center, _ = st.columns([1, 1.2, 1])
-        with button_col_center:
-            st.button(
-                "Sort by Expiration" if chart_mode == "market_value" else "Sort by Price",
-                on_click=toggle_sort_mode,
-                use_container_width=True,
-                type="primary",
-            )
+    st.button(
+        "Sort by Expiration" if st.session_state.sort_mode == "market_value" else "Sort by Price",
+        on_click=toggle_sort_mode,
+        use_container_width=True,
+        type="primary",
+    )
 
     positions = []
     try:
@@ -618,8 +694,8 @@ def streamlit_dashboard() -> None:
     except Exception:
         positions = []
 
-    with col2:
-        if positions:
-            st.markdown(_build_values_table_html(positions), unsafe_allow_html=True)
-        else:
-            st.info("No position values available")
+    if positions:
+        positions = _ordered_option_groups(positions_data, tracking_data, sort_mode=st.session_state.sort_mode)
+        st.markdown(_build_values_table_html(positions), unsafe_allow_html=True)
+    else:
+        st.info("No position values available")
